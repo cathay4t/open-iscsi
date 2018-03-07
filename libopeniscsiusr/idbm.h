@@ -17,21 +17,19 @@
  * Author: Gris Ge <fge@redhat.com>
  */
 
-#ifndef __ISCSI_USR_IFACE_H__
-#define __ISCSI_USR_IFACE_H__
+#ifndef __ISCSI_OPEN_USR_IDBM_H__
+#define __ISCSI_OPEN_USR_IDBM_H__
+
+#include <stdio.h>
+#include <stdbool.h>
 
 #include "libopeniscsiusr/libopeniscsiusr_common.h"
-#include <stdint.h>
 
-/*
- * BUG(Gris Ge): Should include 'iface_kern_id' parameter.
- */
-__DLL_LOCAL int _iscsi_iface_get_from_sysfs(struct iscsi_context *ctx,
-					    uint32_t host_id, uint32_t sid,
-					    const char *iface_kern_id,
-					    struct iscsi_iface **iface);
+struct __DLL_LOCAL idbm;
 
-__DLL_LOCAL void _iscsi_iface_free(struct iscsi_iface *iface);
+__DLL_LOCAL int _idbm_lock(struct iscsi_context *ctx);
+__DLL_LOCAL void _idbm_unlock(struct iscsi_context *ctx);
+__DLL_LOCAL int _idbm_print_iface(struct iscsi_context *ctx,
+				  struct iscsi_iface *iface, FILE *f);
 
-
-#endif /* End of __ISCSI_USR_IFACE_H__ */
+#endif /* End of __ISCSI_OPEN_USR_IDBM_H__ */

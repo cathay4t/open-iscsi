@@ -24,6 +24,12 @@
 #include <dirent.h>
 #include <string.h>
 #include <unistd.h>
+#include <net/if.h>
+#include <sys/socket.h>
+#include <linux/ethtool.h>
+#include <sys/ioctl.h>
+#include <linux/sockios.h>
+#include <net/if_arp.h>
 
 #include "libopeniscsiusr/libopeniscsiusr.h"
 #include "misc.h"
@@ -63,6 +69,10 @@ static const struct _num_str_conv _ISCSI_RC_MSG_CONV[] = {
 	{LIBISCSI_ERR_ACCESS, "Permission deny"},
 	{LIBISCSI_ERR_NOMEM, "Out of memory"},
 	{LIBISCSI_ERR_SYSFS_LOOKUP, "Could not lookup object in sysfs"},
+	{LIBISCSI_ERR_IDBM, "Error accessing/managing iSCSI DB"},
+	{LIBISCSI_ERR_TRANS_NOT_FOUND,
+		"iSCSI transport module not loaded in kernel or iscsid"},
+	{LIBISCSI_ERR_INVAL, "Invalid argument"},
 };
 
 _iscsi_str_func_gen(iscsi_strerror, int, rc, _ISCSI_RC_MSG_CONV);
@@ -121,4 +131,140 @@ bool _file_exists(const char *path)
 		return true;
 	else
 		return false;
+}
+
+static bool _is_eth(struct iscsi_context *ctx, const char *if_name)
+{
+	struct ifreq ifr;
+	int sockfd = -1;
+	char strerr_buff[_STRERR_BUFF_LEN];
+
+	assert(if_name != NULL);
+
+	memset(&ifr, 0, sizeof(ifr));
+
+	strncpy(ifr.ifr_name, if_name, IFNAMSIZ);
+
+	sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (sockfd < 0) {
+		_warn(ctx, "Failed to create SOCK_DGRAM AF_INET socket: %d %s",
+		      errno, _strerror(errno, strerr_buff));
+		return false;
+	}
+
+	if (ioctl(sockfd, SIOCGIFHWADDR, &ifr) != 0) {
+		_warn(ctx, "IOCTL SIOCGIFHWADDR to %s failed: %d %s", if_name,
+		      errno, _strerror(errno, strerr_buff));
+		close(sockfd);
+		return false;
+	}
+
+	close(sockfd);
+
+	if (ifr.ifr_hwaddr.sa_family == ARPHRD_ETHER)
+		return true;
+
+	return false;
+}
+
+/*
+ * driver_name should be char[_ETH_DRIVER_NAME_MAX_LEN]
+ */
+static int _eth_driver_get(struct iscsi_context *ctx, const char *if_name,
+			   char *driver_name)
+{
+	int sockfd = -1;
+	struct ethtool_drvinfo drvinfo;
+	struct ifreq ifr;
+	char strerr_buff[_STRERR_BUFF_LEN];
+
+	assert(ctx != NULL);
+	assert(if_name != NULL);
+	assert(driver_name != NULL);
+
+	memset(&ifr, 0, sizeof(ifr));
+	memset(&drvinfo, 0, sizeof(drvinfo));
+
+	strncpy(ifr.ifr_name, if_name, IFNAMSIZ);
+	drvinfo.cmd = ETHTOOL_GDRVINFO;
+	ifr.ifr_data = (caddr_t) &drvinfo;
+
+	sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (sockfd < 0) {
+		_error(ctx, "Failed to create SOCK_DGRAM AF_INET socket: %d %s",
+		       errno, _strerror(errno, strerr_buff));
+		return LIBISCSI_ERR_BUG;
+	}
+
+	if (ioctl(sockfd, SIOCETHTOOL, &ifr) != 0) {
+		_warn(ctx, "IOCTL SIOCETHTOOL to %s failed: %d %s", if_name,
+		      errno, _strerror(errno, strerr_buff));
+		close(sockfd);
+		return LIBISCSI_ERR_BUG;
+	}
+	close(sockfd);
+	snprintf(driver_name, _ETH_DRIVER_NAME_MAX_LEN, drvinfo.driver);
+
+	return LIBISCSI_OK;
+}
+
+int _eth_ifs_get(struct iscsi_context *ctx, struct _eth_if ***eifs,
+		 uint32_t *eif_count)
+{
+	int rc = LIBISCSI_OK;
+	struct if_nameindex *if_ni = NULL;
+	struct if_nameindex *if_i = NULL;
+	struct _eth_if *eif = NULL;
+	uint32_t tmp_count = 0;
+
+	assert(ctx != NULL);
+	assert(eifs != NULL);
+	assert(eif_count != NULL);
+
+	*eifs = NULL;
+	*eif_count = 0;
+
+	if_ni = if_nameindex();
+	_alloc_null_check(ctx, if_ni, rc, out);
+
+	for (if_i = if_ni; if_i && if_i->if_index && if_i->if_name; ++if_i)
+		tmp_count++;
+
+	if (tmp_count == 0)
+		goto out;
+
+	*eifs = calloc(tmp_count, sizeof(struct _eth_if *));
+	_alloc_null_check(ctx, *eifs, rc, out);
+
+	for (if_i = if_ni; if_i && if_i->if_index && if_i->if_name; ++if_i) {
+		if (! _is_eth(ctx, if_i->if_name))
+			continue;
+		eif = calloc(1, sizeof(struct _eth_if));
+		_alloc_null_check(ctx, eif, rc, out);
+		(*eifs)[(*eif_count)++] = eif;
+		snprintf(eif->if_name, sizeof(eif->if_name)/sizeof(char),
+			 "%s", if_i->if_name);
+		_good(_eth_driver_get(ctx, eif->if_name, eif->driver_name),
+		      rc, out);
+	}
+
+out:
+	if (rc != LIBISCSI_OK) {
+		_eth_ifs_free(*eifs, *eif_count);
+		*eifs = NULL;
+		*eif_count = 0;
+	}
+	return rc;
+}
+
+void _eth_ifs_free(struct _eth_if **eifs, uint32_t eif_count)
+{
+	uint32_t i = 0;
+
+	if ((eif_count == 0) || (eifs == NULL))
+		return;
+
+	for (; i < eif_count; ++i)
+		free(eifs[i]);
+	free(eifs);
 }

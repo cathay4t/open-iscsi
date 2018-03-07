@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017 Red Hat, Inc.
+ * Copyright (C) 2017-2018 Red Hat, Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,12 +19,15 @@
 #ifndef __ISCSI_USR_CONTEXT_H__
 #define __ISCSI_USR_CONTEXT_H__
 
+#include "idbm.h"
+
 struct iscsi_context {
 	void (*log_func)(struct iscsi_context *ctx, int priority,
 			 const char *file, int line, const char *func_name,
 			 const char *format, va_list args);
 	int log_priority;
 	void *userdata;
+	struct idbm *db;
 };
 
 
