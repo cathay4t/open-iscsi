@@ -23,6 +23,7 @@
 #include "libopeniscsiusr/libopeniscsiusr_common.h"
 #include "rfc.h"
 #include "idbm.h"
+#include "disc.h"
 
 #define PORTAL_GROUP_TAG_UNKNOWN	-1
 /* q depths */
@@ -68,6 +69,8 @@
 #define DEFAULT_IPADDRESS	"default"
 #define DEFAULT_HWADDRESS	"default"
 
-void __DLL_LOCAL _default_node(struct iscsi_node *node);
+__DLL_LOCAL void _default_node(struct iscsi_node *node);
+__DLL_LOCAL void _default_disc_cfg(struct iscsi_discovery_cfg *cfg);
+__DLL_LOCAL void _default_iscsid_cfg(struct iscsid_cfg *cfg);
 
 #endif /* End of __ISCSI_USR_DEFAULT_H__ */

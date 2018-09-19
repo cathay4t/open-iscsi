@@ -89,4 +89,8 @@ __DLL_LOCAL int _iscsi_hids_get(struct iscsi_context *ctx, uint32_t **hids,
 
 __DLL_LOCAL bool _iscsi_transport_is_loaded(const char *transport_name);
 
+__DLL_LOCAL int _iscsi_host_id_of_iface(struct iscsi_context *ctx,
+					struct iscsi_iface *iface,
+					uint32_t *host_id);
+
 #endif /* End of __ISCSI_USR_SYSFS_H__ */

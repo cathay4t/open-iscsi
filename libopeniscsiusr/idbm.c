@@ -53,6 +53,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <stdbool.h>
+#include <errno.h>
 
 #include "libopeniscsiusr/libopeniscsiusr_common.h"
 
@@ -64,6 +65,8 @@
 #include "version.h"
 #include "node.h"
 #include "default.h"
+#include "disc.h"
+#include "iscsid.h"
 
 #define TYPE_INT_O	1
 #define TYPE_STR	2
@@ -73,15 +76,6 @@
 #define TYPE_INT32	6
 #define TYPE_INT64	7
 #define TYPE_BOOL	8
-#define MAX_KEYS	256   /* number of keys total(including CNX_MAX) */
-#define NAME_MAXVAL	128   /* the maximum length of key name */
-#define VALUE_MAXVAL	256   /* the maximum length of 223 bytes in the RFC. */
-/* ^ MAX_KEYS, NAME_MAXVAL and VALUE_MAXVAL are copied from usr/idbm.h
- * The RFC 3720 only said:
- *	If not otherwise specified, the maximum length of a simple-value (not
- *	its encoded representation) is 255 bytes, not including the delimiter
- *	(comma or zero byte).
- */
 
 #define OPTS_MAXVAL	8
 
@@ -248,6 +242,74 @@ do { \
 	_n++; \
 } while(0)
 
+#define _str_to_num(ctx, name, int_str, int_val, int_type, is_from_user, rc, \
+		    out) \
+	do { \
+		int tmp_errno = 0; \
+		long long val = strtoll(int_str, NULL, 10 /* base */); \
+		tmp_errno = errno; \
+		const char *overflow_type = NULL; \
+		if (tmp_errno != 0) { \
+			if (is_from_user) { \
+				rc = LIBISCSI_ERR_INVAL; \
+				_error(ctx, "Invalid iSCSI configuration value" \
+				       ": Failed to convert string to " \
+				       "number: '%s', error %d", int_str, \
+				       tmp_errno); \
+			} else { \
+				rc = LIBISCSI_ERR_IDBM; \
+				_error(ctx, "Corrupted iSCSI configuration " \
+				       "database: Failed to convert string to " \
+				       "number: '%s', error %d", int_str, \
+				       tmp_errno); \
+			} \
+			goto out; \
+		} else { \
+			switch (int_type) { \
+			case TYPE_UINT8: \
+				if (val > UINT8_MAX) \
+					overflow_type = "uint8_t"; \
+				break; \
+			case TYPE_UINT16: \
+				if (val > UINT16_MAX) \
+					overflow_type = "uint16_t"; \
+				break; \
+			case TYPE_UINT32: \
+				if (val > UINT32_MAX) \
+					overflow_type = "uint32_t"; \
+				break; \
+			case TYPE_INT32: \
+				if ((val > INT32_MAX) || (val < INT32_MIN)) \
+					overflow_type = "int32_t"; \
+				break; \
+			case TYPE_INT64: \
+				if ((val == INT64_MAX) || (val == INT64_MIN)) \
+					overflow_type = "int64_t"; \
+				break; \
+			default: \
+				rc = LIBISCSI_ERR_IDBM; \
+				_error(ctx, "Corrupted iSCSI configuration " \
+				       "database: %s has unknown idbm_rec " \
+				       "type %d", name, int_type); \
+				goto out; \
+			} \
+		} \
+		if (overflow_type) { \
+			if (is_from_user) { \
+				rc = LIBISCSI_ERR_INVAL; \
+				_error(ctx, "Invalid value '%s': overflow %s", \
+				       int_str, overflow_type); \
+			} else { \
+				rc = LIBISCSI_ERR_IDBM; \
+				_error(ctx, "Corrupted iSCSI configuration " \
+				       "database: value '%s' overflows %s", \
+				       int_str, overflow_type); \
+			} \
+			goto out; \
+		} \
+		int_val = val; \
+	} while(0) \
+
 enum modify_mode {
 	_CANNOT_MODIFY,
 	_CAN_MODIFY,
@@ -269,7 +331,17 @@ struct idbm_rec {
 	enum modify_mode	can_modify;
 };
 
-static void _idbm_node_rec_link(struct iscsi_node *node, struct idbm_rec *recs);
+const char * const PASSWORD_KEYS[] = {
+	SESSION_PASSWORD, SESSION_PASSWORD_IN, DISC_ST_PASSWORD,
+	DISC_ST_PASSWORD_IN, HOST_AUTH_PASSWORD, HOST_AUTH_PASSWORD_IN
+	};
+
+static int _idbm_node_rec_link(struct iscsi_node *node, struct idbm_rec *recs);
+static void _idbm_disc_cfg_rec_link(struct iscsi_discovery_cfg *cfg,
+				    struct idbm_rec *recs);
+static int _idbm_recs_edit(struct iscsi_context *ctx, struct idbm_rec *recs,
+			   const char *key_name, const char *value,
+			   bool is_from_user);
 
 int _idbm_lock(struct iscsi_context *ctx)
 {
@@ -558,142 +630,6 @@ void _idbm_node_print(struct iscsi_node *node, FILE *f, bool show_secret)
 	_idbm_recs_free(recs);
 }
 
-static int _idbm_rec_update_param(struct iscsi_context *ctx,
-				  struct idbm_rec *recs, char *name,
-				  char *value, int line_number)
-{
-	int rc = LIBISCSI_OK;
-	int i = 0;
-	int j = 0;
-	int passwd_done = 0;
-	char passwd_len[8];
-
-	assert(ctx != NULL);
-	assert(recs != NULL);
-	assert(name != NULL);
-	assert(value != NULL);
-
-setup_passwd_len:
-	for (i = 0; i < MAX_KEYS; ++i) {
-		if (!strcmp(name, recs[i].name)) {
-			_debug(ctx, "updated '%s', '%s' => '%s'", name,
-			       recs[i].value, value);
-			/* parse recinfo by type */
-			switch (recs[i].type) {
-			case TYPE_UINT8:
-				if (!recs[i].data)
-					continue;
-
-				*(uint8_t *)recs[i].data =
-					strtoul(value, NULL, 10);
-				goto updated;
-			case TYPE_UINT16:
-				if (!recs[i].data)
-					continue;
-
-				*(uint16_t *)recs[i].data =
-					strtoul(value, NULL, 10);
-				goto updated;
-			case TYPE_UINT32:
-				if (!recs[i].data)
-					continue;
-
-				*(uint32_t *)recs[i].data =
-					strtoul(value, NULL, 10);
-				goto updated;
-			case TYPE_STR:
-				if (!recs[i].data)
-					continue;
-
-				_strncpy((char*)recs[i].data,
-					 value, recs[i].data_len);
-				goto updated;
-			case TYPE_INT32:
-				if (!recs[i].data)
-					continue;
-
-				*(int32_t *)recs[i].data =
-					strtoul(value, NULL, 10);
-				goto updated;
-			case TYPE_INT64:
-				if (!recs[i].data)
-					continue;
-
-				*(int64_t *)recs[i].data =
-					strtoull(value, NULL, 10);
-				goto updated;
-			case TYPE_INT_O:
-				for (j = 0; j < recs[i].numopts; ++j) {
-					if (!strcmp(value, recs[i].opts[j])) {
-						if (!recs[i].data)
-							continue;
-
-						*(int*)recs[i].data = j;
-						goto updated;
-					}
-				}
-				goto unknown_value;
-			case TYPE_BOOL:
-				if (!recs[i].data)
-					continue;
-				if (strcmp(value, "Yes") == 0)
-					*(bool *)recs[i].data = true;
-				else if (strcmp(value, "No") == 0)
-					*(bool *)recs[i].data = false;
-				else
-					goto unknown_value;
-				goto updated;
-			default:
-unknown_value:
-				_error(ctx, "Got unknown data type %d "
-				       "for name '%s', value '%s'",
-				       recs[i].data, recs[i].name,
-				       recs[i].value);
-				rc = LIBISCSI_ERR_BUG;
-				goto out;
-			}
-			if (line_number) {
-				_warn(ctx, "config file line %d contains "
-					   "unknown value format '%s' for "
-					   "parameter name '%s'",
-					   line_number, value, name);
-			} else {
-				_error(ctx, "unknown value format '%s' for "
-				       "parameter name '%s'", value, name);
-				rc = LIBISCSI_ERR_INVAL;
-			}
-			goto out;
-		}
-	}
-	_error(ctx, "Unknown parameter name %s", name);
-	rc = LIBISCSI_ERR_INVAL;
-	goto out;
-
-updated:
-	_strncpy((char*)recs[i].value, value, VALUE_MAXVAL);
-
-#define check_password_param(_param) \
-	if (!passwd_done && !strcmp(#_param, name)) { \
-		passwd_done = 1; \
-		name = #_param "_length"; \
-		snprintf(passwd_len, 8, "%d", (int)strlen(value)); \
-		value = passwd_len; \
-		goto setup_passwd_len; \
-	}
-
-	check_password_param(node.session.auth.password);
-	check_password_param(node.session.auth.password_in);
-	check_password_param(discovery.sendtargets.auth.password);
-	check_password_param(discovery.sendtargets.auth.password_in);
-	check_password_param(discovery.slp.auth.password);
-	check_password_param(discovery.slp.auth.password_in);
-	check_password_param(host.auth.password);
-	check_password_param(host.auth.password_in);
-
-out:
-	return rc;
-}
-
 /*
  * from linux kernel
  */
@@ -747,7 +683,7 @@ static int _idbm_recs_read(struct iscsi_context *ctx, struct idbm_rec *recs,
 		goto out;
 	}
 
-	_info(ctx, "Parsing iSCSI interface configuration %s", conf_path);
+	_info(ctx, "Parsing iSCSI configuration %s", conf_path);
 	/* process the config file */
 	do {
 		line = fgets(buffer, sizeof (buffer), f);
@@ -803,8 +739,7 @@ static int _idbm_recs_read(struct iscsi_context *ctx, struct idbm_rec *recs,
 		}
 		*(value+i) = 0;
 
-		rc = _idbm_rec_update_param(ctx, recs, name, value,
-					    line_number);
+		rc = _idbm_recs_edit(ctx, recs, name, value, false);
 		if (rc == LIBISCSI_ERR_INVAL) {
 			_error(ctx, "config file %s invalid.", conf_path);
 			goto out;
@@ -813,6 +748,66 @@ static int _idbm_recs_read(struct iscsi_context *ctx, struct idbm_rec *recs,
 	} while (line);
 
 out:
+	if (f != NULL)
+		fclose(f);
+	return rc;
+}
+
+static int _idbm_recs_write(struct iscsi_context *ctx, struct idbm_rec *recs,
+			    const char *conf_path, const char *conf_dir)
+{
+	int rc = LIBISCSI_OK;
+	FILE *f = NULL;
+	struct stat statb;
+	int stat_rc = 0;
+	char strerr_buff[_STRERR_BUFF_LEN];
+	int errno_save = 0;
+
+	assert(ctx != NULL);
+	assert(recs != NULL);
+	assert(conf_path != NULL);
+	assert(conf_dir != NULL);
+	assert(strlen(conf_path) != 0);
+	assert(strlen(conf_dir) != 0);
+
+	// Check folder, create if not exists.
+	stat_rc = stat(conf_dir, &statb);
+	if (stat_rc == ENOENT) {
+		if (mkdir(conf_dir, 0660) != 0) {
+			_error(ctx, "Could not create folder %s, error %d: %s",
+			       conf_dir, _strerror(errno, strerr_buff));
+			rc = LIBISCSI_ERR_IDBM;
+			goto out;
+		}
+	} else if (stat_rc == 0) {
+		if (! S_ISDIR(statb.st_mode)) {
+			rc = LIBISCSI_ERR_IDBM;
+			_error(ctx, "Corrupted iSCSI configuration database: "
+			       "%s should be a folder", conf_dir);
+			goto out;
+		}
+	} else {
+		rc = LIBISCSI_ERR_IDBM;
+		_error(ctx, "Could not stat %s err %d.", conf_dir, errno);
+		goto out;
+	}
+
+	f = fopen(conf_path, "w");
+	errno_save = errno;
+	if (!f) {
+		_error(ctx, "Failed to open %s using write mode: %d %s",
+		       conf_path, errno_save,
+		       _strerror(errno_save, strerr_buff));
+		rc = LIBISCSI_ERR_IDBM;
+		goto out;
+	}
+	_info(ctx, "Saving iSCSI configuration %s", conf_path);
+	_idbm_recs_print(recs, f, IDBM_SHOW);
+
+out:
+	if (rc != LIBISCSI_OK) {
+		unlink(conf_path);
+	}
 	if (f != NULL)
 		fclose(f);
 	return rc;
@@ -879,7 +874,7 @@ void _idbm_free(struct idbm *db)
 	free(db);
 }
 
-static void _idbm_node_rec_link(struct iscsi_node *node, struct idbm_rec *recs)
+static int _idbm_node_rec_link(struct iscsi_node *node, struct idbm_rec *recs)
 {
 	int num = 0;
 
@@ -1018,6 +1013,7 @@ static void _idbm_node_rec_link(struct iscsi_node *node, struct idbm_rec *recs)
 		  num, _CAN_MODIFY);
 	_rec_bool(CONN_OFMARKER, recs, node, conn.op_cfg.OFMarker, IDBM_SHOW,
 		  num, _CAN_MODIFY);
+	return num;
 }
 
 int _idbm_node_get(struct iscsi_context *ctx, const char *target_name,
@@ -1086,6 +1082,440 @@ out:
 		*node = NULL;
 	}
 	free(conf_path);
+	_idbm_recs_free(recs);
+	return rc;
+}
+
+int _idbm_disc_cfg_conf_path_gen(struct iscsi_context *ctx,
+				 struct iscsi_discovery_cfg *cfg,
+				 char **conf_path, char **conf_dir)
+{
+	int rc = LIBISCSI_OK;
+	struct stat statb;
+	char *old_conf_path = NULL;
+	const char *conf_file_name = NULL;
+
+	assert(ctx != NULL);
+	assert(cfg != NULL);
+	assert(conf_path != NULL);
+	assert(cfg->address != NULL);
+	assert(strlen(cfg->address) != 0);
+	assert(cfg->port != 0);
+
+	*conf_path = NULL;
+	if (conf_dir != NULL)
+		*conf_dir = NULL;
+
+	switch (cfg->type) {
+	case LIBISCSI_DISCOVERY_TYPE_SENDTARGETS:
+		_good(_asprintf(&old_conf_path, "%s/%s,%d", ST_CONFIG_DIR,
+			 cfg->address, cfg->port), rc, out);
+		conf_file_name = ST_CONFIG_NAME;
+		break;
+	case LIBISCSI_DISCOVERY_TYPE_ISNS:
+		_good(_asprintf(&old_conf_path, "%s/%s,%d", ISNS_CONFIG_DIR,
+			 cfg->address, cfg->port), rc, out);
+		conf_file_name = ISNS_CONFIG_NAME;
+		break;
+	default:
+		rc = LIBISCSI_ERR_INVAL;
+		_error(ctx, "Invalid discovery type: %d", cfg->type);
+		goto out;
+	}
+	// Check for old style discovery config file (svn pre 780)
+	if (stat(old_conf_path, &statb)) {
+		rc = LIBISCSI_ERR_IDBM;
+		_error(ctx, "Could not stat %s err %d.", old_conf_path, errno);
+		goto out;
+	}
+	if (S_ISREG(statb.st_mode)) {
+		// Is old style
+		return rc;
+	}
+	if (! S_ISDIR(statb.st_mode)) {
+		rc = LIBISCSI_ERR_IDBM;
+		_error(ctx, "Corrupted iSCSI configuration database: file %s "
+		       "is neither directory or regular file.", conf_path);
+		goto out;
+	}
+	// New style of discovery config file.
+	if (conf_dir != NULL)
+		_good(_asprintf(conf_dir, "%s", old_conf_path), rc, out);
+	_good(_asprintf(conf_path, "%s/%s", old_conf_path,
+			conf_file_name), rc, out);
+
+
+out:
+	if (rc != LIBISCSI_OK) {
+		free(*conf_path);
+		if (conf_dir != NULL) {
+			free(*conf_dir);
+			*conf_dir = NULL;
+		}
+		*conf_path = NULL;
+	}
+	free(old_conf_path);
+	return rc;
+}
+
+int _idbm_disc_cfg_get(struct iscsi_context *ctx,
+		       struct iscsi_discovery_cfg *cfg)
+{
+	int rc = LIBISCSI_OK;
+	char *conf_path = NULL;
+	struct iscsi_discovery_cfg *new_cfg = NULL;
+	struct idbm_rec *recs = NULL;
+
+	assert(ctx != NULL);
+	assert(cfg != NULL);
+	assert(cfg->address != NULL);
+	assert(strlen(cfg->address) != 0);
+	assert(cfg->port != 0);
+
+	new_cfg = calloc(1, sizeof(struct iscsi_discovery_cfg));
+	_alloc_null_check(ctx, new_cfg, rc, out);
+
+	recs = _idbm_recs_alloc();
+	_alloc_null_check(ctx, recs, rc, out);
+
+	_good(_idbm_disc_cfg_conf_path_gen(ctx, cfg, &conf_path, NULL), rc, out);
+
+	_idbm_disc_cfg_rec_link(new_cfg, recs);
+
+	_default_disc_cfg(cfg);
+
+	_good(_idbm_recs_read(ctx, recs, conf_path), rc, out);
+
+out:
+	if (rc == LIBISCSI_OK) {
+		memcpy(cfg, new_cfg, sizeof(struct iscsi_discovery_cfg));
+	}
+	iscsi_discovery_cfg_free(new_cfg);
+	free(conf_path);
+	_idbm_recs_free(recs);
+	return rc;
+}
+
+int _idbm_disc_cfg_write(struct iscsi_context *ctx,
+			 struct iscsi_discovery_cfg *cfg)
+{
+	int rc = LIBISCSI_OK;
+	char *conf_path = NULL;
+	char *conf_dir = NULL;
+	struct idbm_rec *recs = NULL;
+
+	assert(ctx != NULL);
+	assert(cfg != NULL);
+
+	_good(_idbm_disc_cfg_conf_path_gen(ctx, cfg, &conf_path, &conf_dir),
+	      rc, out);
+	recs = _idbm_recs_alloc();
+	_alloc_null_check(ctx, recs, rc, out);
+	_idbm_disc_cfg_rec_link(cfg, recs);
+	_good(_idbm_recs_write(ctx, recs, conf_path, conf_dir), rc, out);
+
+out:
+	free(conf_path);
+	free(conf_dir);
+	_idbm_recs_free(recs);
+	return rc;
+}
+
+static int _idbm_disc_cfg_st_rec_link(struct iscsi_sendtargets_config *cfg,
+				      struct idbm_rec *recs, int num)
+{
+	assert(cfg != NULL);
+	assert(recs != NULL);
+	_rec_int_o2(DISC_ST_AUTH_METHOD, recs, cfg, auth.authmethod, IDBM_SHOW,
+		    "None", "CHAP", num, _CAN_MODIFY);
+	_rec_str(DISC_ST_USERNAME, recs, cfg, auth.username, IDBM_SHOW, num,
+		 _CAN_MODIFY);
+	_rec_str(DISC_ST_PASSWORD, recs, cfg, auth.password, IDBM_MASKED, num,
+		 _CAN_MODIFY);
+	_rec_int32(DISC_ST_PASSWORD_LEN, recs, cfg, auth.password_length,
+		   IDBM_HIDE, num, _CAN_MODIFY);
+	_rec_str(DISC_ST_USERNAME_IN, recs, cfg, auth.username_in, IDBM_SHOW,
+		 num, _CAN_MODIFY);
+	_rec_str(DISC_ST_PASSWORD_IN, recs, cfg, auth.password_in, IDBM_MASKED,
+		 num, _CAN_MODIFY);
+	_rec_int32(DISC_ST_PASSWORD_IN_LEN, recs, cfg, auth.password_in_length,
+		   IDBM_HIDE, num, _CAN_MODIFY);
+	_rec_int32(DISC_ST_LOGIN_TMO, recs, cfg, conn_timeo.login_timeout,
+		   IDBM_SHOW, num, _CAN_MODIFY);
+	_rec_int_o2(DISC_ST_USE_DISC_DAEMON, recs, cfg, use_discoveryd,
+		    IDBM_SHOW, "No", "Yes", num, _CAN_MODIFY);
+	_rec_int32(DISC_ST_DISC_DAEMON_POLL_INVAL, recs, cfg,
+		   discoveryd_poll_inval, IDBM_SHOW, num, _CAN_MODIFY);
+	_rec_int32(DISC_ST_REOPEN_MAX, recs, cfg, reopen_max, IDBM_SHOW, num,
+		   _CAN_MODIFY);
+	_rec_int32(DISC_ST_AUTH_TMO, recs, cfg, conn_timeo.auth_timeout,
+		   IDBM_SHOW, num, _CAN_MODIFY);
+	_rec_int32(DISC_ST_ACTIVE_TMO, recs, cfg, conn_timeo.active_timeout,
+		   IDBM_SHOW, num, _CAN_MODIFY);
+	_rec_int32(DISC_ST_MAX_RECV_DLEN, recs, cfg,
+		   conn_conf.MaxRecvDataSegmentLength, IDBM_SHOW, num,
+		   _CAN_MODIFY);
+	return num;
+}
+
+static int _idbm_disc_cfg_isns_rec_link(struct iscsi_isns_config *cfg,
+					struct idbm_rec *recs,
+					int num)
+{
+	_rec_int_o2(DISC_ISNS_USE_DISC_DAEMON, recs, cfg, use_discoveryd,
+		    IDBM_SHOW, "No", "Yes", num, _CAN_MODIFY);
+	_rec_int32(DISC_ISNS_DISC_DAEMON_POLL_INVAL, recs, cfg,
+		   discoveryd_poll_inval, IDBM_SHOW, num, _CAN_MODIFY);
+	return num;
+}
+
+
+static void _idbm_disc_cfg_rec_link(struct iscsi_discovery_cfg *cfg,
+				    struct idbm_rec *recs)
+{
+	int num = 0;
+	assert(cfg != NULL);
+	assert(recs != NULL);
+
+	_rec_int_o2(DISC_STARTUP, recs, cfg, startup,
+		    IDBM_SHOW, "manual", "automatic", num, _CAN_MODIFY);
+	_rec_int_o6(DISC_TYPE, recs, cfg, type,
+		    IDBM_SHOW, "sendtargets", "isns", "offload_send_targets",
+		    "slp", "static", "fw", num, _CANNOT_MODIFY);
+	switch (cfg->type) {
+	case DISCOVERY_TYPE_SENDTARGETS:
+		_rec_str(DISC_ST_ADDR, recs, cfg,
+			address, IDBM_SHOW, num, _CANNOT_MODIFY);
+		_rec_int32(DISC_ST_PORT, recs, cfg, port, IDBM_SHOW, num,
+			   _CANNOT_MODIFY);
+		num = _idbm_disc_cfg_st_rec_link(&cfg->u.sendtargets, recs,
+						 num);
+		break;
+	case DISCOVERY_TYPE_ISNS:
+		_rec_str(DISC_ISNS_ADDR, recs, cfg, address, IDBM_SHOW, num,
+			 _CANNOT_MODIFY);
+		_rec_int32(DISC_ISNS_PORT, recs, cfg, port, IDBM_SHOW, num,
+			   _CANNOT_MODIFY);
+		num = _idbm_disc_cfg_isns_rec_link(&cfg->u.isns, recs, num);
+		break;
+	default:
+		break;
+	}
+}
+
+static int _idbm_recs_edit(struct iscsi_context *ctx, struct idbm_rec *recs,
+			   const char *name, const char *value,
+			   bool is_from_user)
+{
+	int rc = LIBISCSI_OK;
+	size_t i = 0;
+	int j = 0;
+	const char *choices = NULL;
+	const char *choice_delimiter = ", ";
+	char *pass_len_key = NULL;
+	char pass_len_val[8];
+
+	assert(ctx != NULL);
+	assert(recs != NULL);
+	assert(name != NULL);
+	assert(strlen(name) != 0);
+	assert(value != NULL);
+
+	for (i = 0; i < MAX_KEYS; i++) {
+		if ((is_from_user) && (recs[i].visible == IDBM_HIDE))
+			continue;
+		if (strcmp(recs[i].name, name) != 0)
+			continue;
+		if ((is_from_user) && (recs[i].can_modify != _CAN_MODIFY)) {
+			rc = LIBISCSI_ERR_INVAL;
+			_error(ctx, "Specified iSCSI configuration key '%s' "
+			       "is not editable", name);
+			goto out;
+		}
+		if (!recs[i].data) {
+			rc = LIBISCSI_ERR_BUG;
+			_error(ctx, "BUG: Found iSCSI configuration "
+			       "database key '%s', but no data pointer "
+			       "assigned", name);
+			goto out;
+		}
+		switch (recs[i].type) {
+		case TYPE_INT_O:
+			for (j = 0; j < recs[i].numopts; ++j) {
+				if (!strcmp(value, recs[i].opts[j])) {
+					if (!recs[i].data)
+						continue;
+
+					*(int*)recs[i].data = j;
+					goto updated;
+				}
+			}
+			choices = _join_str_array (recs[i].opts,
+						   recs[i].numopts,
+						   choice_delimiter);
+			if (is_from_user)
+				_error(ctx, "Invalid value '%s', choices are: "
+				       "%s", value, choices);
+			else
+				_error(ctx, "Corrupted iSCSI configuration "
+				       "database: invalid value '%s', "
+				       "choices are %s", value, choices);
+			goto unknown_value;
+		case TYPE_STR:
+			_strncpy((char*)recs[i].data, value, recs[i].data_len);
+			goto updated;
+		case TYPE_UINT8:
+			_str_to_num(ctx, recs[i].name, value,
+				    *(uint8_t *)recs[i].data, TYPE_UINT8,
+				    is_from_user, rc, out);
+			goto updated;
+		case TYPE_UINT16:
+			_str_to_num(ctx, recs[i].name, value,
+				    *(uint16_t *)recs[i].data, TYPE_UINT16,
+				    is_from_user, rc, out);
+			goto updated;
+		case TYPE_UINT32:
+			_str_to_num(ctx, recs[i].name, value,
+				    *(uint32_t *)recs[i].data, TYPE_UINT32,
+				    is_from_user, rc, out);
+			goto updated;
+		case TYPE_INT32:
+			_str_to_num(ctx, recs[i].name, value,
+				    *(int32_t *)recs[i].data, TYPE_INT32,
+				    is_from_user, rc, out);
+			goto updated;
+		case TYPE_INT64:
+			_str_to_num(ctx, recs[i].name,  value,
+				    *(int64_t *)recs[i].data, TYPE_INT64,
+				    is_from_user, rc, out);
+			goto updated;
+		case TYPE_BOOL:
+			if (strcmp(value, "Yes") == 0)
+				*(bool *)recs[i].data = true;
+			else if (strcmp(value, "No") == 0)
+				*(bool *)recs[i].data = false;
+			else {
+				if (is_from_user)
+					_error(ctx, "Invalid value '%s', "
+					       "choices are: Yes, No",
+					       value);
+				else
+					_error(ctx, "Corrupted iSCSI "
+					       "configuration database: "
+					       "invalid value '%s', choices "
+					       "are Yes, No", value);
+				goto unknown_value;
+			}
+			goto updated;
+		default:
+			rc = LIBISCSI_ERR_IDBM;
+			_error(ctx, "Corrupted iSCSI configuration database: "
+			       "%s has unknown value type type %d",
+			       recs[i].name, recs[i].type);
+			goto out;
+		}
+	}
+
+	if (is_from_user) {
+		rc = LIBISCSI_ERR_INVAL;
+		_error(ctx, "Invalid iSCSI configuration key '%s'", name);
+	} else {
+		rc = LIBISCSI_ERR_IDBM;
+		_error(ctx, "Corrupted iSCSI configuration database: "
+		       "invalid key '%s'", name);
+	}
+	goto out;
+
+updated:
+	_strncpy((char*)recs[i].value, value, VALUE_MAXVAL);
+	for (i = 0; i < sizeof(PASSWORD_KEYS)/sizeof(char *); ++i) {
+		if (strcmp(name, PASSWORD_KEYS[i]) == 0) {
+			// Update password length.
+			snprintf(pass_len_val,
+				 sizeof(pass_len_val)/sizeof(char),
+				 "%d", (int) strlen(value));
+			_good(_asprintf(&pass_len_key, "%s_length",
+					name), rc, out);
+			rc = _idbm_recs_edit(ctx, recs, pass_len_key,
+					     pass_len_val, false);
+			free(pass_len_key);
+			if (rc != LIBISCSI_OK)
+				goto out;
+			break;
+		}
+	}
+	goto out;
+
+unknown_value:
+	if (is_from_user)
+		rc = LIBISCSI_ERR_INVAL;
+	else
+		rc = LIBISCSI_ERR_IDBM;
+
+out:
+	free((void *) choices);
+	return rc;
+}
+
+int _idbm_disc_cfg_edit(struct iscsi_context *ctx,
+			struct iscsi_discovery_cfg *cfg,
+			const char *name, const char *value)
+{
+	int rc = LIBISCSI_OK;
+	char *conf_path = NULL;
+	char *conf_dir = NULL;
+	struct idbm_rec *recs = NULL;
+
+	assert(ctx != NULL);
+	assert(recs != NULL);
+	assert(name != NULL);
+	assert(strlen(name) != 0);
+	assert(value != NULL);
+	assert(strlen(value) != 0);
+
+	_good(_idbm_disc_cfg_conf_path_gen(ctx, cfg, &conf_path, &conf_dir),
+	      rc, out);
+	recs = _idbm_recs_alloc();
+	_alloc_null_check(ctx, recs, rc, out);
+	_idbm_disc_cfg_rec_link(cfg, recs);
+	_good(_idbm_recs_edit(ctx, recs, name, value, true), rc, out);
+	_good(_idbm_recs_write(ctx, recs, conf_path, conf_dir), rc, out);
+	_good(_idbm_disc_cfg_get(ctx, cfg), rc, out);
+
+out:
+	free(conf_path);
+	free(conf_dir);
+	_idbm_recs_free(recs);
+	return rc;
+}
+
+int _idbm_iscsid_cfg_get(struct iscsi_context *ctx, struct iscsid_cfg *cfg,
+			 const char *conf_path)
+{
+	struct idbm_rec *recs = NULL;
+	int num = 0;
+	int rc = LIBISCSI_OK;
+
+	assert(ctx != NULL);
+	assert(recs != NULL);
+	assert(conf_path != NULL);
+	assert(strlen(conf_path) != 0);
+
+	recs = _idbm_recs_alloc();
+	_alloc_null_check(ctx, recs, rc, out);
+
+	num = _idbm_node_rec_link(&cfg->node, recs);
+	num = _idbm_disc_cfg_st_rec_link(&cfg->st, recs, num);
+	num = _idbm_disc_cfg_isns_rec_link(&cfg->isns, recs, num);
+	_rec_str("iscsid.startup", recs, cfg, startup, IDBM_SHOW, num,
+		 _CAN_MODIFY);
+	_rec_bool("iscsid.safe_logout", recs, cfg, safe_logout, IDBM_SHOW, num,
+		 _CAN_MODIFY);
+
+	_default_iscsid_cfg(cfg);
+	_good(_idbm_recs_read(ctx, recs, conf_path), rc, out);
+
+out:
 	_idbm_recs_free(recs);
 	return rc;
 }

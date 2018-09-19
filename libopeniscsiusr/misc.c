@@ -329,3 +329,33 @@ out:
 
 	return rc;
 }
+
+const char *_join_str_array(char **str_array, size_t count,
+			    const char *choice_delimiter)
+{
+	char *ret = NULL;
+	size_t i = 0;
+	size_t all_size = 0;
+
+	assert(str_array != NULL);
+	assert(choice_delimiter != NULL);
+
+	for (; i < count; ++i) {
+		all_size += strlen(str_array[i]);
+		if (i != count - 1)
+			// We are not the last one.
+			all_size += strlen(choice_delimiter);
+	}
+	ret = malloc(all_size * sizeof(char));
+	if (ret == NULL)
+		return ret;
+	for (i = 0; i < count; ++i) {
+		if (i != count - 1)
+			snprintf(ret + (ret ? strlen(ret) : 0), all_size, "%s%s",
+				 str_array[i], choice_delimiter);
+		else
+			snprintf(ret + (ret ? strlen(ret) : 0), all_size, "%s",
+				 str_array[i]);
+	}
+	return ret;
+}

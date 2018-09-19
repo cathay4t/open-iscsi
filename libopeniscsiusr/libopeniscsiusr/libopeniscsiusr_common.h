@@ -48,8 +48,18 @@
 #define LIBISCSI_ERR_ACCESS		13
 /* ^ Permission denied */
 
+#define LIBISCSI_ERR_ISCSID_COMM_ERR	18
+/* ^ A read/write to iscsid failed */
+
+#define LIBISCSI_ERR_ISCSID_NOTCONN	20
+/* ^ Could ont connect to iscsid */
+
 #define LIBISCSI_ERR_SYSFS_LOOKUP	22
 /* ^ Could not lookup object in sysfs */
+
+#define LIBISCSI_ERR_HOST_NOT_FOUND	23
+/* ^ Could not lookup host */
+
 
 /*
  * Use the syslog severity level as log priority

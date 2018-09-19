@@ -18,13 +18,18 @@
  */
 
 #include <string.h>
+#include <stdbool.h>
 
 #include "libopeniscsiusr/libopeniscsiusr.h"
 #include "default.h"
 #include "iface.h"
 #include "node.h"
+#include "iscsid.h"
+#include "idbm.h"
+#include "disc.h"
 
 #define CONFIG_DIGEST_NEVER	0
+#define DEF_INI_DISC_MAX_RECV_SEG_LEN	32768
 
 static void default_session_op_cfg(struct iscsi_session_op_cfg *op_cfg)
 {
@@ -105,4 +110,51 @@ void _default_node(struct iscsi_node *node)
 	default_conn_op_cfg(&node->conn.op_cfg);
 
 	default_iface(&node->iface);
+}
+
+static void _default_disc_cfg_st(struct iscsi_sendtargets_config *cfg)
+{
+	cfg->discoveryd_poll_inval = 30;
+	cfg->use_discoveryd = 0;
+	cfg->reopen_max = 5;
+	cfg->auth.authmethod = 0;
+	cfg->auth.password_length = 0;
+	cfg->auth.password_in_length = 0;
+	cfg->conn_timeo.login_timeout=15;
+	cfg->conn_timeo.auth_timeout = 45;
+	cfg->conn_timeo.active_timeout=30;
+	default_session_op_cfg(&cfg->session_conf);
+	default_conn_op_cfg(&cfg->conn_conf);
+	/* override def setting */
+	cfg->conn_conf.MaxRecvDataSegmentLength = DEF_INI_DISC_MAX_RECV_SEG_LEN;
+}
+
+static void _default_disc_cfg_isns(struct iscsi_isns_config *cfg)
+{
+	cfg->use_discoveryd = 0;
+	cfg->discoveryd_poll_inval = -1;
+}
+
+void _default_disc_cfg(struct iscsi_discovery_cfg *cfg)
+{
+	cfg->startup = ISCSI_STARTUP_MANUAL;
+	cfg->iscsid_req_tmo = -1;
+	switch (cfg->type) {
+	case DISCOVERY_TYPE_SENDTARGETS:
+		_default_disc_cfg_st(&cfg->u.sendtargets);
+		break;
+	case DISCOVERY_TYPE_ISNS:
+		_default_disc_cfg_isns(&cfg->u.isns);
+		break;
+	default:
+		break;
+	}
+}
+
+void _default_iscsid_cfg(struct iscsid_cfg *cfg)
+{
+	cfg->safe_logout = false;
+	_default_node(&cfg->node);
+	_default_disc_cfg_st(&cfg->st);
+	_default_disc_cfg_isns(&cfg->isns);
 }

@@ -39,7 +39,8 @@ HEADERS = libopeniscsiusr/libopeniscsiusr.h \
 TESTS = tests/test_context tests/test_session tests/test_iface tests/test_node
 EXTRA_MAN_FILES = libopeniscsiusr.h.3
 
-OBJS = context.o misc.o session.o sysfs.o iface.o idbm.o node.o default.o
+OBJS = context.o misc.o session.o sysfs.o iface.o idbm.o node.o default.o \
+       iscsid.o disc.o
 
 CFLAGS ?= -O2 -g
 CFLAGS += -Wall -Werror -Wextra -fvisibility=hidden -fPIC

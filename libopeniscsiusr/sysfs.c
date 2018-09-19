@@ -35,10 +35,13 @@
 #include <regex.h>
 #include <dirent.h>
 #include <errno.h>
+#include <strings.h>
 
 #include "libopeniscsiusr/libopeniscsiusr_common.h"
 #include "sysfs.h"
 #include "misc.h"
+#include "iface.h"
+#include "default.h"
 
 #define _INT32_STR_MAX_LEN		12
 /* ^ The max uint32_t is 4294967296 which requires 11 bytes for string.
@@ -439,7 +442,7 @@ int _iscsi_hids_get(struct iscsi_context *ctx, uint32_t **hids,
 
 bool _iscsi_transport_is_loaded(const char *transport_name)
 {
-	int rc = LIBISCSI_OK;
+	bool rc = false;
 	char *path = NULL;
 
 	if (transport_name == NULL)
@@ -448,13 +451,10 @@ bool _iscsi_transport_is_loaded(const char *transport_name)
 	_good(_asprintf(&path, "%s/%s", _ISCSI_SYS_TRANSPORT_DIR,
 			transport_name), rc, out);
 
-	if (access(path, F_OK) == 0) {
-		free(path);
-		return true;
-	}
+	rc = _file_exists(path);
 out:
 	free(path);
-	return false;
+	return rc;
 }
 
 int _iscsi_iface_kern_ids_of_host_id(struct iscsi_context *ctx,
@@ -513,5 +513,75 @@ out:
 	free(sysfs_sh_path);
 	free(dev_path);
 	free(sysfs_iface_path);
+	return rc;
+}
+
+
+int _iscsi_host_id_of_iface(struct iscsi_context *ctx,
+			    struct iscsi_iface *iface, uint32_t *host_id)
+{
+	int rc = LIBISCSI_OK;
+	const char *prop_filename = NULL;
+	struct dirent **namelist = NULL;
+	int n = 0;
+	int i = 0;
+	char *sysfs_folder_path = NULL;
+	const char *host_id_str = NULL;
+	char buffer[VALUE_MAXVAL];
+	const char *cur_value = NULL;
+
+	assert(ctx != NULL);
+	assert(iface != NULL);
+	assert(host_id != NULL);
+
+	*host_id = UINT32_MAX;
+
+	if (strlen(iface->hwaddress) &&
+	    strcasecmp(iface->hwaddress, DEFAULT_HWADDRESS)) {
+		cur_value = iface->hwaddress;
+		prop_filename = "hwaddress";
+	} else if (strlen(iface->netdev) && strcasecmp(iface->netdev,
+						       DEFAULT_NETDEV)) {
+		prop_filename = "netdev";
+		cur_value = iface->netdev;
+	} else if (strlen(iface->ipaddress) && strcasecmp(iface->ipaddress,
+							  DEFAULT_IPADDRESS)) {
+		prop_filename = "ipaddress";
+		cur_value = iface->ipaddress;
+	} else {
+		rc = LIBISCSI_ERR_INVAL;
+		_error(ctx, "Invalid iSCSI interface: not bound to any "
+		       "hardware address or net device or ip address");
+	}
+	_good(_scandir(ctx, _ISCSI_SYS_HOST_DIR, &namelist, &n), rc, out);
+	for (i = 0; i < n; ++i) {
+		host_id_str = namelist[i]->d_name;
+		if (sscanf(host_id_str, "host%" SCNu32, host_id) != 1) {
+			rc = LIBISCSI_ERR_SYSFS_LOOKUP;
+			_error(ctx, "sscanf() failed on string %s",
+			       host_id_str);
+			goto out;
+		}
+		_good(_asprintf(&sysfs_folder_path, "%s/%s",
+				_ISCSI_SYS_HOST_DIR, host_id_str),
+		      rc, out);
+		_good(_sysfs_prop_get_str(ctx, sysfs_folder_path,
+					  prop_filename, buffer,
+					  sizeof(buffer)/sizeof(char),
+					  NULL),
+		      rc, out);
+		free(sysfs_folder_path);
+		sysfs_folder_path = NULL;
+		if (strcmp(buffer, cur_value) == 0) {
+			goto out;
+		}
+	}
+
+out:
+	free(sysfs_folder_path);
+	_scandir_free(namelist, n);
+	if (rc != LIBISCSI_OK) {
+		*host_id = UINT32_MAX;
+	}
 	return rc;
 }

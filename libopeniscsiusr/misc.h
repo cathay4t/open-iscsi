@@ -120,4 +120,9 @@ __DLL_LOCAL int _scandir(struct iscsi_context *ctx, const char *dir_path,
 			 struct dirent ***namelist, int *count);
 __DLL_LOCAL void _scandir_free(struct dirent **namelist, int count);
 
+/* Returned pointer should be freed */
+__DLL_LOCAL const char *_join_str_array(char **str_array, size_t count,
+					const char *choice_delimiter);
+
+
 #endif /* End of __ISCSI_USR_MISC_H__ */

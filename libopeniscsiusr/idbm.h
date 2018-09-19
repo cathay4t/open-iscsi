@@ -32,12 +32,26 @@
 
 #define ISCSI_CONFIG_ROOT	"/etc/iscsi/"
 #define IFACE_CONFIG_DIR	ISCSI_CONFIG_ROOT"ifaces"
+#define ST_CONFIG_DIR		ISCSI_CONFIG_ROOT"send_targets"
+#define ISNS_CONFIG_DIR		ISCSI_CONFIG_ROOT"isns"
+#define ST_CONFIG_NAME		"st_config"
+#define ISNS_CONFIG_NAME	"isns_config"
 #define AUTH_STR_MAX_LEN	256
 #define BOOT_NAME_MAXLEN	256
 #define IDBM_DUMP_SIZE		8192
 
+#define MAX_KEYS	256   /* number of keys total(including CNX_MAX) */
+#define NAME_MAXVAL	128   /* the maximum length of key name */
+#define VALUE_MAXVAL	256   /* the maximum length of 223 bytes in the RFC. */
+/* ^ MAX_KEYS, NAME_MAXVAL and VALUE_MAXVAL are copied from usr/idbm.h
+ * The RFC 3720 only said:
+ *	If not otherwise specified, the maximum length of a simple-value (not
+ *	its encoded representation) is 255 bytes, not including the delimiter
+ *	(comma or zero byte).
+ */
 
 struct __DLL_LOCAL idbm;
+struct __DLL_LOCAL idbm_rec;
 
 struct idbm {
 	int		refs;
@@ -201,6 +215,21 @@ struct iscsi_session_idbm {
 
 };
 
+struct iscsi_sendtargets_config {
+	int32_t reopen_max;
+	int32_t use_discoveryd;
+	int32_t discoveryd_poll_inval;
+	struct iscsi_auth_config auth;
+	struct iscsi_conn_tmo_cfg conn_timeo;
+	struct iscsi_conn_op_cfg conn_conf;
+	struct iscsi_session_op_cfg session_conf;
+};
+
+struct iscsi_isns_config {
+	int32_t use_discoveryd;
+	int32_t discoveryd_poll_inval;
+};
+
 __DLL_LOCAL struct idbm *_idbm_new(void);
 __DLL_LOCAL void _idbm_free(struct idbm *db);
 __DLL_LOCAL int _idbm_lock(struct iscsi_context *ctx);
@@ -216,5 +245,27 @@ __DLL_LOCAL int _idbm_node_get(struct iscsi_context *ctx,
 				struct iscsi_node **node);
 __DLL_LOCAL void _idbm_node_print(struct iscsi_node *node, FILE *f,
 				  bool show_secret);
+
+struct __DLL_LOCAL iscsid_cfg;
+struct __DLL_LOCAL iscsi_discovery_cfg;
+
+__DLL_LOCAL int _idbm_disc_cfg_get(struct iscsi_context *ctx,
+				   struct iscsi_discovery_cfg *cfg);
+
+__DLL_LOCAL int _idbm_disc_cfg_write(struct iscsi_context *ctx,
+				     struct iscsi_discovery_cfg *cfg);
+
+__DLL_LOCAL int _idbm_disc_cfg_edit(struct iscsi_context *ctx,
+				    struct iscsi_discovery_cfg *cfg,
+				    const char *name, const char *value);
+
+__DLL_LOCAL int _idbm_disc_cfg_conf_path_gen(struct iscsi_context *ctx,
+					     struct iscsi_discovery_cfg *cfg,
+					     char **conf_path, char **conf_dir);
+
+__DLL_LOCAL int _idbm_iscsid_cfg_get(struct iscsi_context *ctx,
+				     struct iscsid_cfg *cfg,
+				     const char *conf_path);
+
 
 #endif /* End of __ISCSI_OPEN_USR_IDBM_H__ */

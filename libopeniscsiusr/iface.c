@@ -72,7 +72,6 @@ const struct iscsi_iface _DEFAULT_IFACES[] = {
 	},
 };
 
-static int _load_kernel_module(struct iscsi_context *ctx, const char *drv_name);
 static int _iface_conf_write(struct iscsi_context *ctx,
 			     struct iscsi_iface *iface);
 static int _fill_hw_iface_from_sys(struct iscsi_context *ctx,
@@ -417,7 +416,7 @@ out:
 	return rc;
 }
 
-static int _load_kernel_module(struct iscsi_context *ctx, const char *drv_name)
+int _load_kernel_module(struct iscsi_context *ctx, const char *drv_name)
 {
 #ifdef USE_KMOD
 	struct kmod_ctx *kctx = NULL;
@@ -839,7 +838,7 @@ void iscsi_ifaces_free(struct iscsi_iface **ifaces, uint32_t iface_count)
 	free (ifaces);
 }
 
-static bool _iface_is_bound_by_hwaddr(struct iscsi_iface *iface)
+bool _iface_is_bound_by_hwaddr(struct iscsi_iface *iface)
 {
 	if (iface && strlen(iface->hwaddress) &&
 	    strcmp(iface->hwaddress, DEFAULT_HWADDRESS))
@@ -847,7 +846,7 @@ static bool _iface_is_bound_by_hwaddr(struct iscsi_iface *iface)
 	return false;
 }
 
-static bool _iface_is_bound_by_netdev(struct iscsi_iface *iface)
+bool _iface_is_bound_by_netdev(struct iscsi_iface *iface)
 {
 	if (iface && strlen(iface->netdev) &&
 	   strcmp(iface->netdev, DEFAULT_NETDEV))

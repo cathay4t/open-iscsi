@@ -20,10 +20,11 @@
 #ifndef __ISCSI_USR_IFACE_H__
 #define __ISCSI_USR_IFACE_H__
 
-#include "libopeniscsiusr/libopeniscsiusr_common.h"
 #include <stdint.h>
 #include <netdb.h>
 #include <net/if.h>
+
+#include "libopeniscsiusr/libopeniscsiusr_common.h"
 
 #define VALUE_MAXVAL	256   /* the maximum length of 223 bytes in the RFC. */
 /* ^ VALUE_MAXVAL is copied from usr/idbm.h
@@ -143,5 +144,13 @@ __DLL_LOCAL int _iscsi_iface_get_from_sysfs(struct iscsi_context *ctx,
 					    struct iscsi_iface **iface);
 
 __DLL_LOCAL bool _iface_is_valid(struct iscsi_iface *iface);
+
+__DLL_LOCAL int _load_kernel_module(struct iscsi_context *ctx,
+				    const char *drv_name);
+
+__DLL_LOCAL bool _iface_is_bound_by_netdev(struct iscsi_iface *iface);
+
+__DLL_LOCAL bool _iface_is_bound_by_hwaddr(struct iscsi_iface *iface);
+
 
 #endif /* End of __ISCSI_USR_IFACE_H__ */

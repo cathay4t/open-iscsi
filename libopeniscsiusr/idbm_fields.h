@@ -155,4 +155,36 @@
 #define CONN_IFMARKER		"node.conn[0].iscsi.IFMarker"
 #define CONN_OFMARKER		"node.conn[0].iscsi.OFMarker"
 
+/* discovery fields */
+#define DISC_STARTUP		"discovery.startup"
+#define DISC_TYPE		"discovery.type"
+/* sendtargets */
+#define DISC_ST_ADDR		"discovery.sendtargets.address"
+#define DISC_ST_PORT		"discovery.sendtargets.port"
+#define DISC_ST_AUTH_METHOD	"discovery.sendtargets.auth.authmethod"
+#define DISC_ST_USERNAME	"discovery.sendtargets.auth.username"
+#define DISC_ST_PASSWORD	"discovery.sendtargets.auth.password"
+#define DISC_ST_PASSWORD_LEN	"discovery.sendtargets.auth.password_length"
+#define DISC_ST_USERNAME_IN	"discovery.sendtargets.auth.username_in"
+#define DISC_ST_PASSWORD_IN	"discovery.sendtargets.auth.password_in"
+#define DISC_ST_PASSWORD_IN_LEN	"discovery.sendtargets.auth.password_in_length"
+#define DISC_ST_LOGIN_TMO	"discovery.sendtargets.timeo.login_timeout"
+#define DISC_ST_REOPEN_MAX	"discovery.sendtargets.reopen_max"
+#define DISC_ST_DISC_DAEMON_POLL_INVAL	\
+	"discovery.sendtargets.discoveryd_poll_inval"
+#define DISC_ST_USE_DISC_DAEMON	"discovery.sendtargets.use_discoveryd"
+#define DISC_ST_AUTH_TMO	"discovery.sendtargets.timeo.auth_timeout"
+#define DISC_ST_ACTIVE_TMO	"discovery.sendtargets.timeo.active_timeout"
+#define DISC_ST_MAX_RECV_DLEN	\
+	"discovery.sendtargets.iscsi.MaxRecvDataSegmentLength"
+
+#define DISC_ISNS_DISC_DAEMON_POLL_INVAL	\
+	"discovery.isns.discoveryd_poll_inval"
+#define DISC_ISNS_USE_DISC_DAEMON	"discovery.isns.use_discoveryd"
+#define DISC_ISNS_ADDR		"discovery.sendtargets.address"
+#define DISC_ISNS_PORT		"discovery.sendtargets.port"
+
+#define HOST_AUTH_PASSWORD		"host.auth.password"
+#define HOST_AUTH_PASSWORD_IN		"host.auth.password_in"
+
 #endif /* End of __ISCSI_OPEN_USER_IDBM_FIELDS_H */
